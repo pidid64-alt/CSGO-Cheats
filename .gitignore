@@ -28,6 +28,11 @@ ipch/
 *.aps
 *.ncb
 
+# linux-memory-lab build output
+linux-memory-lab/target_sim
+__pycache__/
+*.pyc
+
 # Project files: this repository ships source only, each lesson is dropped into
 # an empty Visual Studio project (see README).
 *.sln

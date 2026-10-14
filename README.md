@@ -56,6 +56,10 @@ The sources were cleaned up so each one compiles on its own and exits with a mes
 
 Offsets are still per-project snapshots taken at different patches — `dwEntityList` alone has six different values across the folders — and are kept exactly as they were recorded in the lessons.
 
+## Linux lab
+
+None of the seven projects runs on Linux: they are Win32 programs, and the game they attach to no longer exists. [`linux-memory-lab/`](linux-memory-lab/) teaches the same techniques natively instead — `process_vm_readv`, module base from `/proc/<pid>/maps`, symbol resolution, pointer chains, struct offsets and radar projection — against `target_sim`, a simulator you start yourself, with a web interface. `make && make run-target && make run-inspector`.
+
 ## Contributors
 
 - [HeathHowren](https://github.com/HeathHowren)

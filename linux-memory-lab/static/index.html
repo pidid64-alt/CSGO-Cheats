@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux memory lab</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="title">
+    <h1>Linux memory lab</h1>
+    <p>Reading another process the way the Windows projects in this repository do, with
+       <code>process_vm_readv</code> instead of <code>ReadProcessMemory</code>. The target is
+       <code>target_sim</code>, a simulator you start yourself.</p>
+  </div>
+  <div class="status">
+    <span id="status-pill" class="pill waiting">waiting for target</span>
+    <span id="read-time" class="muted"></span>
+  </div>
+</header>
+
+<section class="chain">
+  <h2>Attach chain</h2>
+  <ol id="chain-list">
+    <li><span class="step">1</span><span class="label">process by name</span><span class="value" id="v-pid">-</span></li>
+    <li><span class="step">2</span><span class="label">module base from /proc/pid/maps</span><span class="value" id="v-base">-</span></li>
+    <li><span class="step">3</span><span class="label">ELF symbol g_world</span><span class="value" id="v-symbol">-</span></li>
+    <li><span class="step">4</span><span class="label">pointer address = base + offset</span><span class="value" id="v-pointer">-</span></li>
+    <li><span class="step">5</span><span class="label">dereference &rarr; World struct</span><span class="value" id="v-world">-</span></li>
+  </ol>
+  <p class="muted" id="v-exe"></p>
+</section>
+
+<main>
+  <section class="panel radar-panel">
+    <h2>Radar <span class="muted">top-down projection of the entity list</span></h2>
+    <canvas id="radar" width="520" height="520"></canvas>
+    <p class="muted">Entities orbit the origin in the target's own memory. Nothing is drawn over
+      another application: this is the lab's own window.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Entity list <span class="muted">struct array at World+0x20, stride 0x40</span></h2>
+    <div class="table-wrap">
+      <table id="entities">
+        <thead>
+          <tr><th>#</th><th>id</th><th>name</th><th>team</th><th>health</th><th>origin x, y, z</th><th>address</th></tr>
+        </thead>
+        <tbody id="entity-rows">
+          <tr class="empty"><td colspan="7">no data yet</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="write-box">
+      <h3>Write demo <span class="muted">process_vm_writev</span></h3>
+      <p class="muted">The only write this server accepts is the health field of one entity, so the
+        lab cannot be pointed at arbitrary memory.</p>
+      <div class="write-controls">
+        <label>entity
+          <select id="write-index"></select>
+        </label>
+        <label>health
+          <input id="write-value" type="number" min="1" max="100" value="100">
+        </label>
+        <button id="write-button">write to memory</button>
+      </div>
+      <p id="write-result" class="muted"></p>
+    </div>
+  </section>
+</main>
+
+<section class="panel">
+  <h2>Raw bytes <span class="muted">the same memory before it is parsed</span></h2>
+  <div class="hex-grid">
+    <div>
+      <h3>World header, 0x00 - 0x1F</h3>
+      <pre id="hex-header">-</pre>
+      <p class="muted">magic 4C41424F, entity_count, tick, camera x/y/z, yaw</p>
+    </div>
+    <div>
+      <h3>entities[0], 0x40 bytes</h3>
+      <pre id="hex-entity"></pre>
+      <p class="muted">id, health, team, alive, origin, velocity, name</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <p>Educational lab against a process you own. It knows nothing about any game and contains no
+     game offsets. Do not point memory tools at online multiplayer games.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
