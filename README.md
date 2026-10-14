@@ -45,6 +45,17 @@ These are single-file Visual Studio projects.
 
 Build errors about the character set or `pch.h` are covered in the [FAQ](faq.md).
 
+## Code state
+
+The sources were cleaned up so each one compiles on its own and exits with a message instead of misbehaving when something is missing. None of the techniques changed and the offsets are still dead.
+
+- `CSGO-Aimbot` and `CSGO-Glow` included an `Offsets.h` that is not in this repository, so neither project built. The include is gone and `dwViewMatrix`, the one offset that lived in it, is defined with the rest.
+- `GetModuleBaseAddress` ran off the end of the function without returning when the module was missing (undefined behavior) and leaked its snapshot handle. It now returns 0, and every project checks the window, the process handle and the module base before reading memory.
+- `void main` is now `int main`, thread entry points use the real `DWORD WINAPI (LPVOID)` signature instead of a cast, handles are released on exit, and the busy loops sleep instead of pinning a core.
+- `CSGO-GDI-ESP`: `WHITE_BRUSH` is a stock object id and is now fetched with `GetStockObject`, the `bottom + left` height typo is fixed, `WM_PAINT` no longer falls through into `WM_ERASEBKGND`, the DC from `BeginPaint` is no longer deleted, and the window class and window share one instance handle.
+
+Offsets are still per-project snapshots taken at different patches — `dwEntityList` alone has six different values across the folders — and are kept exactly as they were recorded in the lessons.
+
 ## Contributors
 
 - [HeathHowren](https://github.com/HeathHowren)

@@ -1,10 +1,17 @@
 #include <iostream>
+#include <atomic>
+#include <cmath>
+#include <cfloat>
+#include <cstdint>
+#include <cstring>
 #include <Windows.h>
 #include <TlHelp32.h>
-#include "Offsets.h"
+//The old "#include "Offsets.h"" was removed: that header is not in the repository, which is why
+//this project never compiled. dwViewMatrix lived in it and is defined with the others below.
 
 #define dwLocalPlayer 0xD30B94
 #define dwEntityList 0x4D44A24
+#define dwViewMatrix 0x4D2E014 //Taken from CSGO-GDI-ESP. Like every offset here it is dead, and it comes from a different dump than the lines above, so re-dump all of them together before trusting any of it.
 #define m_dwBoneMatrix 0x26A8
 #define m_iTeamNum 0xF4
 #define m_iHealth 0x100
@@ -15,26 +22,30 @@ const int SCREEN_WIDTH = GetSystemMetrics(SM_CXSCREEN); const int xhairx = SCREE
 const int SCREEN_HEIGHT = GetSystemMetrics(SM_CYSCREEN); const int xhairy = SCREEN_HEIGHT / 2;
 
 HWND hwnd;
-DWORD procId; 
-HANDLE hProcess; 
-uintptr_t moduleBase; 
+DWORD procId;
+HANDLE hProcess;
+uintptr_t moduleBase;
 HDC hdc;
-int closest; //Used in a thread to save CPU usage.
+std::atomic<int> closest{ 1 }; //Written by a worker thread and read by main, so it has to be atomic.
 
 uintptr_t GetModuleBaseAddress(const char* modName) {
 	HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, procId);
-	if (hSnap != INVALID_HANDLE_VALUE) {
-		MODULEENTRY32 modEntry;
-		modEntry.dwSize = sizeof(modEntry);
-		if (Module32First(hSnap, &modEntry)) {
-			do {
-				if (!strcmp(modEntry.szModule, modName)) {
-					CloseHandle(hSnap);
-					return (uintptr_t)modEntry.modBaseAddr;
-				}
-			} while (Module32Next(hSnap, &modEntry));
-		}
+	if (hSnap == INVALID_HANDLE_VALUE)
+		return 0;
+
+	uintptr_t modBaseAddr = 0;
+	MODULEENTRY32 modEntry;
+	modEntry.dwSize = sizeof(modEntry);
+	if (Module32First(hSnap, &modEntry)) {
+		do {
+			if (!strcmp(modEntry.szModule, modName)) {
+				modBaseAddr = (uintptr_t)modEntry.modBaseAddr;
+				break;
+			}
+		} while (Module32Next(hSnap, &modEntry));
 	}
+	CloseHandle(hSnap); //Closed on every path, the snapshot used to leak when the module was missing.
+	return modBaseAddr; //0 means "not found", the caller must check it.
 }
 
 template<typename T> T RPM(SIZE_T address) {
@@ -51,19 +62,19 @@ public:
 };
 
 
-int getTeam(uintptr_t player) { 
+int getTeam(uintptr_t player) {
 	return RPM<int>(player + m_iTeamNum);
 }
 
 uintptr_t GetLocalPlayer() {
-	return RPM< uintptr_t>(moduleBase + dwLocalPlayer);
+	return RPM<uintptr_t>(moduleBase + dwLocalPlayer);
 }
 
 uintptr_t GetPlayer(int index) {  //Each player has an index. 1-64
-	return RPM< uintptr_t>(moduleBase + dwEntityList + index * 0x10); //We multiply the index by 0x10 to select the player we want in the entity list.
+	return RPM<uintptr_t>(moduleBase + dwEntityList + index * 0x10); //We multiply the index by 0x10 to select the player we want in the entity list.
 }
 
-int GetPlayerHealth(uintptr_t player) { 
+int GetPlayerHealth(uintptr_t player) {
 	return RPM<int>(player + m_iHealth);
 }
 
@@ -72,25 +83,25 @@ Vector3 PlayerLocation(uintptr_t player) { //Stores XYZ coordinates in a Vector3
 }
 
 bool DormantCheck(uintptr_t player) {
-	return RPM<int>(player + m_bDormant);
+	return RPM<int>(player + m_bDormant) != 0;
 }
 
-Vector3 get_head(uintptr_t player) { 
+Vector3 get_head(uintptr_t player) {
 	struct boneMatrix_t {
-		byte pad3[12];
+		BYTE pad3[12];
 		float x;
-		byte pad1[12];
+		BYTE pad1[12];
 		float y;
-		byte pad2[12];
+		BYTE pad2[12];
 		float z;
 	};
 	uintptr_t boneBase = RPM<uintptr_t>(player + m_dwBoneMatrix);
-	boneMatrix_t boneMatrix = RPM<boneMatrix_t>(boneBase + (sizeof(boneMatrix) * 8 /*8 is the boneid for head*/));
+	boneMatrix_t boneMatrix = RPM<boneMatrix_t>(boneBase + (sizeof(boneMatrix_t) * 8 /*8 is the boneid for head*/));
 	return Vector3(boneMatrix.x, boneMatrix.y, boneMatrix.z);
 }
 
 struct view_matrix_t {
-	float matrix[16]; 
+	float matrix[16];
 } vm;
 
 struct Vector3 WorldToScreen(const struct Vector3 pos, struct view_matrix_t matrix) { //This turns 3D coordinates (ex: XYZ) int 2D coordinates (ex: XY).
@@ -102,7 +113,7 @@ struct Vector3 WorldToScreen(const struct Vector3 pos, struct view_matrix_t matr
 	_x *= 1.f / out.z;
 	_y *= 1.f / out.z;
 
-	out.x = SCREEN_WIDTH * .5f; 
+	out.x = SCREEN_WIDTH * .5f;
 	out.y = SCREEN_HEIGHT * .5f;
 
 	out.x += 0.5f * _x * SCREEN_WIDTH + 0.5f;
@@ -111,26 +122,25 @@ struct Vector3 WorldToScreen(const struct Vector3 pos, struct view_matrix_t matr
 	return out;
 }
 
-float pythag(int x1, int y1, int x2, int y2) {
-	return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+float pythag(float x1, float y1, float x2, float y2) { //Floats, the callers pass screen coordinates that are not whole numbers.
+	return std::sqrt(std::pow(x2 - x1, 2.f) + std::pow(y2 - y1, 2.f));
 }
 
 int FindClosestEnemy() {
 	float Finish;
 	int ClosestEntity = 1;
-	Vector3 Calc = { 0, 0, 0 };
 	float Closest = FLT_MAX;
-	int localTeam = getTeam(GetLocalPlayer()); 
+	int localTeam = getTeam(GetLocalPlayer());
 	for (int i = 1; i < 64; i++) { //Loops through all the entitys in the index 1-64.
-		DWORD Entity = GetPlayer(i); 
-		int EnmTeam = getTeam(Entity); if (EnmTeam == localTeam) continue; 
+		uintptr_t Entity = GetPlayer(i);
+		int EnmTeam = getTeam(Entity); if (EnmTeam == localTeam) continue;
 		int EnmHealth = GetPlayerHealth(Entity); if (EnmHealth < 1 || EnmHealth > 100) continue;
-		int Dormant = DormantCheck(Entity); if (Dormant) continue; 
-		Vector3 headBone = WorldToScreen(get_head(Entity), vm); 
-		Finish = pythag(headBone.x, headBone.y, xhairx, xhairy);
+		bool Dormant = DormantCheck(Entity); if (Dormant) continue;
+		Vector3 headBone = WorldToScreen(get_head(Entity), vm);
+		Finish = pythag(headBone.x, headBone.y, (float)xhairx, (float)xhairy);
 		if (Finish < Closest) {
 			Closest = Finish;
-			ClosestEntity = i; 
+			ClosestEntity = i;
 		}
 	}
 
@@ -138,35 +148,70 @@ int FindClosestEnemy() {
 }
 
 void DrawLine(float StartX, float StartY, float EndX, float EndY) { //This function is optional for debugging.
-	int a, b = 0;
-	HPEN hOPen;
 	HPEN hNPen = CreatePen(PS_SOLID, 2, 0x0000FF /*red*/);
-	hOPen = (HPEN)SelectObject(hdc, hNPen);
-	MoveToEx(hdc, StartX, StartY, NULL); //start of line
-	a = LineTo(hdc, EndX, EndY); //end of line
-	DeleteObject(SelectObject(hdc, hOPen));
-} 
+	HPEN hOPen = (HPEN)SelectObject(hdc, hNPen);
+	MoveToEx(hdc, (int)StartX, (int)StartY, NULL); //start of line
+	LineTo(hdc, (int)EndX, (int)EndY); //end of line
+	DeleteObject(SelectObject(hdc, hOPen)); //Puts the old pen back and deletes the one we created.
+}
 
-void FindClosestEnemyThread() { 
-	while (1) {
+DWORD WINAPI FindClosestEnemyThread(LPVOID) { //Real thread signature, the old one was cast to LPTHREAD_START_ROUTINE.
+	while (true) {
 		closest = FindClosestEnemy();
+		Sleep(1); //The thread used to spin a core at 100%.
 	}
+	return 0;
 }
 
 int main() {
 	hwnd = FindWindowA(NULL, "Counter-Strike: Global Offensive");
-	GetWindowThreadProcessId(hwnd, &procId); 
-	moduleBase = GetModuleBaseAddress("client.dll"); 
-	hProcess = OpenProcess(PROCESS_ALL_ACCESS, NULL, procId); 
+	if (!hwnd) {
+		std::cout << "Game window not found." << std::endl;
+		return 1;
+	}
+
+	GetWindowThreadProcessId(hwnd, &procId);
+	hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procId);
+	if (!hProcess) {
+		std::cout << "OpenProcess failed, error " << GetLastError() << std::endl;
+		return 1;
+	}
+
+	moduleBase = GetModuleBaseAddress("client.dll");
+	if (!moduleBase) {
+		std::cout << "client.dll not found in the target process." << std::endl;
+		CloseHandle(hProcess);
+		return 1;
+	}
+
 	hdc = GetDC(hwnd);
-	CreateThread(NULL, NULL, (LPTHREAD_START_ROUTINE)FindClosestEnemyThread, NULL, NULL, NULL); 
+	if (!hdc) {
+		std::cout << "GetDC failed." << std::endl;
+		CloseHandle(hProcess);
+		return 1;
+	}
+
+	HANDLE hThread = CreateThread(NULL, 0, FindClosestEnemyThread, NULL, 0, NULL);
+	if (!hThread) {
+		std::cout << "CreateThread failed, error " << GetLastError() << std::endl;
+		ReleaseDC(hwnd, hdc);
+		CloseHandle(hProcess);
+		return 1;
+	}
 
 	while (!GetAsyncKeyState(VK_END)) { //press the "end" key to end the hack
 		vm = RPM<view_matrix_t>(moduleBase + dwViewMatrix);
-		Vector3 closestw2shead = WorldToScreen(get_head(GetPlayer(closest)), vm); 
-		DrawLine(xhairx, xhairy, closestw2shead.x, closestw2shead.y); //optinal for debugging
+		Vector3 closestw2shead = WorldToScreen(get_head(GetPlayer(closest.load())), vm);
+		DrawLine((float)xhairx, (float)xhairy, closestw2shead.x, closestw2shead.y); //optinal for debugging
 
 		if (GetAsyncKeyState(VK_MENU /*alt key*/) && closestw2shead.z >= 0.001f /*onscreen check*/)
-			SetCursorPos(closestw2shead.x, closestw2shead.y); //turn off "raw input" in CSGO settings
+			SetCursorPos((int)closestw2shead.x, (int)closestw2shead.y); //turn off "raw input" in CSGO settings
+
+		Sleep(1); //The loop used to spin a core at 100%.
 	}
+
+	CloseHandle(hThread);
+	ReleaseDC(hwnd, hdc);
+	CloseHandle(hProcess);
+	return 0;
 }
